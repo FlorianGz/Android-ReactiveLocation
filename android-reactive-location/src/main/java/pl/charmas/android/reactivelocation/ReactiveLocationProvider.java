@@ -5,6 +5,7 @@ import android.content.Context;
 import android.location.Address;
 import android.location.Location;
 import android.support.annotation.Nullable;
+import android.support.annotation.RequiresPermission;
 
 import com.google.android.gms.common.api.Api;
 import com.google.android.gms.common.api.GoogleApiClient;
@@ -22,10 +23,14 @@ import com.google.android.gms.location.places.AutocompletePredictionBuffer;
 import com.google.android.gms.location.places.PlaceBuffer;
 import com.google.android.gms.location.places.PlaceFilter;
 import com.google.android.gms.location.places.PlaceLikelihoodBuffer;
+import com.google.android.gms.location.places.PlacePhotoMetadata;
+import com.google.android.gms.location.places.PlacePhotoMetadataResult;
+import com.google.android.gms.location.places.PlacePhotoResult;
 import com.google.android.gms.location.places.Places;
 import com.google.android.gms.maps.model.LatLngBounds;
 
 import java.util.List;
+import java.util.Locale;
 
 import pl.charmas.android.reactivelocation.observables.GoogleAPIClientObservable;
 import pl.charmas.android.reactivelocation.observables.PendingResultObservable;
@@ -65,6 +70,9 @@ public class ReactiveLocationProvider {
      *
      * @return observable that serves last know location
      */
+    @RequiresPermission(
+            anyOf = {"android.permission.ACCESS_COARSE_LOCATION", "android.permission.ACCESS_FINE_LOCATION"}
+    )
     public Observable<Location> getLastKnownLocation() {
         return LastKnownLocationObservable.createObservable(ctx);
     }
@@ -82,6 +90,9 @@ public class ReactiveLocationProvider {
      * @param locationRequest request object with info about what kind of location you need
      * @return observable that serves infinite stream of location updates
      */
+    @RequiresPermission(
+            anyOf = {"android.permission.ACCESS_COARSE_LOCATION", "android.permission.ACCESS_FINE_LOCATION"}
+    )
     public Observable<Location> getUpdatedLocation(LocationRequest locationRequest) {
         return LocationUpdatesObservable.createObservable(ctx, locationRequest);
     }
@@ -103,6 +114,10 @@ public class ReactiveLocationProvider {
      * @param sourceLocationObservable observable that emits {@link android.location.Location} instances suitable to use as mock locations
      * @return observable that emits {@link com.google.android.gms.common.api.Status}
      */
+    @RequiresPermission(
+            allOf = {"android.permission.ACCESS_COARSE_LOCATION",
+                    "android.permission.ACCESS_MOCK_LOCATION"}
+    )
     public Observable<Status> mockLocation(Observable<Location> sourceLocationObservable) {
         return MockLocationObservable.createObservable(ctx, sourceLocationObservable);
     }
@@ -121,6 +136,9 @@ public class ReactiveLocationProvider {
      * @param intent          PendingIntent that will be called with location updates
      * @return observable that adds the request and PendingIntent
      */
+    @RequiresPermission(
+            anyOf = {"android.permission.ACCESS_COARSE_LOCATION", "android.permission.ACCESS_FINE_LOCATION"}
+    )
     public Observable<Status> requestLocationUpdates(LocationRequest locationRequest, PendingIntent intent) {
         return AddLocationIntentUpdatesObservable.createObservable(ctx, locationRequest, intent);
     }
@@ -139,7 +157,8 @@ public class ReactiveLocationProvider {
 
     /**
      * Creates observable that translates latitude and longitude to list of possible addresses using
-     * included Geocoder class. You should subscribe for this observable on I/O thread.
+     * included Geocoder class. In case geocoder fails with IOException("Service not Available") fallback
+     * decoder is used using google web api. You should subscribe for this observable on I/O thread.
      * The stream finishes after address list is available.
      *
      * @param lat        latitude
@@ -148,7 +167,23 @@ public class ReactiveLocationProvider {
      * @return observable that serves list of address based on location
      */
     public Observable<List<Address>> getReverseGeocodeObservable(double lat, double lng, int maxResults) {
-        return ReverseGeocodeObservable.createObservable(ctx, lat, lng, maxResults);
+        return ReverseGeocodeObservable.createObservable(ctx, Locale.getDefault(), lat, lng, maxResults);
+    }
+
+    /**
+     * Creates observable that translates latitude and longitude to list of possible addresses using
+     * included Geocoder class. In case geocoder fails with IOException("Service not Available") fallback
+     * decoder is used using google web api. You should subscribe for this observable on I/O thread.
+     * The stream finishes after address list is available.
+     *
+     * @param locale     locale for address language
+     * @param lat        latitude
+     * @param lng        longitude
+     * @param maxResults maximal number of results you are interested in
+     * @return observable that serves list of address based on location
+     */
+    public Observable<List<Address>> getReverseGeocodeObservable(Locale locale, double lat, double lng, int maxResults) {
+        return ReverseGeocodeObservable.createObservable(ctx, locale, lat, lng, maxResults);
     }
 
     /**
@@ -196,6 +231,7 @@ public class ReactiveLocationProvider {
      * @param request                         list of request to add
      * @return observable that adds request
      */
+    @RequiresPermission("android.permission.ACCESS_FINE_LOCATION")
     public Observable<Status> addGeofences(PendingIntent geofenceTransitionPendingIntent, GeofencingRequest request) {
         return AddGeofenceObservable.createObservable(ctx, request, geofenceTransitionPendingIntent);
     }
@@ -310,6 +346,39 @@ public class ReactiveLocationProvider {
                     @Override
                     public Observable<AutocompletePredictionBuffer> call(GoogleApiClient api) {
                         return fromPendingResult(Places.GeoDataApi.getAutocompletePredictions(api, query, bounds, filter));
+                    }
+                });
+    }
+
+    /**
+     * Returns observable that fetches photo metadata from the Places API using the place ID.
+     *
+     * @param placeId id for place
+     * @return observable that emits metadata buffer and completes
+     */
+    public Observable<PlacePhotoMetadataResult> getPhotoMetadataById(final String placeId) {
+        return getGoogleApiClientObservable(Places.PLACE_DETECTION_API, Places.GEO_DATA_API)
+                .flatMap(new Func1<GoogleApiClient, Observable<PlacePhotoMetadataResult>>() {
+                    @Override
+                    public Observable<PlacePhotoMetadataResult> call(GoogleApiClient api) {
+                        return fromPendingResult(Places.GeoDataApi.getPlacePhotos(api, placeId));
+                    }
+                });
+    }
+
+    /**
+     * Returns observable that fetches a placePhotoMetadata from the Places API using the place placePhotoMetadata metadata.
+     * Use after fetching the place placePhotoMetadata metadata with {@link ReactiveLocationProvider#getPhotoMetadataById(String)}
+     *
+     * @param placePhotoMetadata the place photo meta data
+     * @return observable that emits the photo result and completes
+     */
+    public Observable<PlacePhotoResult> getPhotoForMetadata(final PlacePhotoMetadata placePhotoMetadata) {
+        return getGoogleApiClientObservable(Places.PLACE_DETECTION_API, Places.GEO_DATA_API)
+                .flatMap(new Func1<GoogleApiClient, Observable<PlacePhotoResult>>() {
+                    @Override
+                    public Observable<PlacePhotoResult> call(GoogleApiClient api) {
+                        return fromPendingResult(placePhotoMetadata.getPhoto(api));
                     }
                 });
     }
